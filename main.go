@@ -71,6 +71,17 @@ var reg8 = []string{
 	"bh",
 }
 
+var addr = []string{
+	"bx + si",
+	"bx + di",
+	"bp + si",
+	"bp + di",
+	"si",
+	"di",
+	"bp",
+	"bx",
+}
+
 func (d *Disassembler) Disassemble() (s []string, err error) {
 	s = append(s, "bits 16")
 
@@ -88,6 +99,17 @@ func (d *Disassembler) Disassemble() (s []string, err error) {
 				op, err := d.decodeMOV(dFlag, wFlag)
 				if err != nil {
 					return s, fmt.Errorf("decode MOV: %v", err)
+				}
+
+				s = append(s, op)
+			}
+		case b&0b11110000 == 0b10110000: // MOV immediate
+			{
+				wFlag := b & 0b00001000 >> 3
+				reg := b & 0b00000111
+				op, err := d.decodeMOVImm(wFlag, reg)
+				if err != nil {
+					return s, fmt.Errorf("decode MOV immediate: %v", err)
 				}
 
 				s = append(s, op)
@@ -114,12 +136,45 @@ func (d *Disassembler) decodeMOV(dFlag, wFlag byte) (s string, err error) {
 		{
 			return d.decodeMOVRegReg(dFlag, wFlag, reg, rm)
 		}
-	case 0b10: // mem, reg: displacement of 16 bits
+	case 0b01: // mem, reg, 8-bit displacement
 		{
-			return d.decodeMOVMemReg(dFlag, wFlag, reg, rm)
+			return d.decodeMOVMemReg8(dFlag, wFlag, reg, rm)
+		}
+	case 0b10: // mem, reg, 16-bit displacement
+		{
+			return d.decodeMOVMemReg16(dFlag, wFlag, reg, rm)
+		}
+	case 0b00: // mem, reg, no displacement
+		{
+			return d.decodeMOVMemReg0(dFlag, wFlag, reg, rm)
 		}
 	}
-	return "", fmt.Errorf("invalid mov")
+	return "", fmt.Errorf("invalid mov: 0b%b", b)
+}
+
+func (d *Disassembler) decodeMOVImm(wFlag, reg byte) (s string, err error) {
+	b, err := d.Read()
+	if err != nil {
+		return "", fmt.Errorf("read byte: %v", err)
+	}
+
+	var regstr string
+	var imm int16
+	if wFlag == 1 {
+		regstr = reg16[reg]
+		imm = int16(b)
+		b, err = d.Read()
+		if err != nil {
+			return "", fmt.Errorf("read byte: %v", err)
+		}
+		imm |= int16(b) << 8
+	} else {
+		regstr = reg8[reg]
+		imm = int16(b)
+	}
+	immstr := fmt.Sprintf("%d", imm)
+
+	return fmt.Sprintf("mov %s, %s", regstr, immstr), nil
 }
 
 func (d *Disassembler) decodeMOVRegReg(dFlag, wFlag, reg, rm byte) (s string, err error) {
@@ -138,13 +193,102 @@ func (d *Disassembler) decodeMOVRegReg(dFlag, wFlag, reg, rm byte) (s string, er
 
 	if dFlag == 1 {
 		return fmt.Sprintf("mov %s, %s", reg1str, reg2str), nil
-	} else {
-		return fmt.Sprintf("mov %s, %s", reg2str, reg1str), nil
 	}
+	return fmt.Sprintf("mov %s, %s", reg2str, reg1str), nil
 }
 
-func (d *Disassembler) decodeMOVMemReg(dFlag, wFlag, reg, rm byte) (s string, err error) {
-	return "", nil
+func (d *Disassembler) decodeMOVMemReg8(dFlag, wFlag, reg, rm byte) (s string, err error) {
+	b, err := d.Read()
+	if err != nil {
+		return "", fmt.Errorf("read byte: %v", err)
+	}
+
+	displacement := int8(b)
+	var addrexp string
+	if displacement != 0 {
+		addrexp = fmt.Sprintf("[%s + %d]", addr[rm], displacement)
+	} else {
+		addrexp = fmt.Sprintf("[%s]", addr[rm])
+	}
+
+	var regstr string
+	if wFlag == 1 {
+		regstr = reg16[reg]
+	} else {
+		regstr = reg8[reg]
+	}
+
+	if dFlag == 1 {
+		return fmt.Sprintf("mov %s, %s", regstr, addrexp), nil
+	}
+	return fmt.Sprintf("mov %s, %s", addrexp, regstr), nil
+}
+
+func (d *Disassembler) decodeMOVMemReg16(dFlag, wFlag, reg, rm byte) (s string, err error) {
+	b, err := d.Read()
+	if err != nil {
+		return "", fmt.Errorf("read byte: %v", err)
+	}
+
+	displacement := int16(b)
+	b, err = d.Read()
+	if err != nil {
+		return "", fmt.Errorf("read byte: %v", err)
+	}
+	displacement |= int16(b) << 8
+
+	var addrexp string
+	if displacement != 0 {
+		addrexp = fmt.Sprintf("[%s + %d]", addr[rm], displacement)
+	} else {
+		addrexp = fmt.Sprintf("[%s]", addr[rm])
+	}
+
+	var regstr string
+	if wFlag == 1 {
+		regstr = reg16[reg]
+	} else {
+		regstr = reg8[reg]
+	}
+
+	if dFlag == 1 {
+		return fmt.Sprintf("mov %s, %s", regstr, addrexp), nil
+	}
+	return fmt.Sprintf("mov %s, %s", addrexp, regstr), nil
+}
+
+func (d *Disassembler) decodeMOVMemReg0(dFlag, wFlag, reg, rm byte) (s string, err error) {
+	var addrexp string
+	if rm == 0b110 {
+		b, err := d.Read()
+		if err != nil {
+			return "", fmt.Errorf("read byte: %v", err)
+		}
+
+		displacement := int16(b)
+		b, err = d.Read()
+		if err != nil {
+			return "", fmt.Errorf("read byte: %v", err)
+		}
+
+		displacement |= int16(b) << 8
+
+		addrexp = fmt.Sprintf("[%d]", displacement)
+	} else {
+		addrexp = fmt.Sprintf("[%s]", addr[rm])
+	}
+
+	var regstr string
+	if wFlag == 1 {
+		regstr = reg16[reg]
+	} else {
+		regstr = reg8[reg]
+	}
+
+	if dFlag == 1 {
+		return fmt.Sprintf("mov %s, %s", regstr, addrexp), nil
+	}
+	return fmt.Sprintf("mov %s, %s", addrexp, regstr), nil
 }
 
 func main() {
@@ -180,6 +324,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	fmt.Printf("; %s disassembly:\n", os.Args[1])
 	for _, line := range s {
 		fmt.Println(line)
 	}
